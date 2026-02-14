@@ -30,3 +30,7 @@ Flutter + Firebase -mobiilisovellus
 - Flutter
 - Firebase
 - Cloud Firestore
+## Toteutettu tähän mennessä
+- Firebase + Firestore (tasks-kokoelma)
+- Tehtävän lisäys (dialogi) ja reaaliaikainen listaus (StreamBuilder)
+- Local notifications setup (Android), webissä ohitettu kIsWeb-tarkistuksella
