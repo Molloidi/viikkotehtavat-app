@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "347848876390",
+    "project_id": "viikkotehtavatapp",
+    "storage_bucket": "viikkotehtavatapp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:347848876390:android:f910daaaf63575269de8a7",
+        "android_client_info": {
+          "package_name": "com.example.viikkotehtavat"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAKx9hiBxCVfGnpAnXVxb-m5Qfs-yPhnfk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
