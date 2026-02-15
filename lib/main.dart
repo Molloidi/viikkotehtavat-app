@@ -2,12 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'firebase_options.dart';
+import 'notification_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+
+  await NotificationService.instance.init();
+
   runApp(const MyApp());
 }
 
@@ -31,7 +35,6 @@ class TasksPage extends StatelessWidget {
   CollectionReference<Map<String, dynamic>> get tasks =>
       FirebaseFirestore.instance.collection('tasks');
 
-  // Päiväjärjestys
   int dayIndex(String day) => const {
         'Maanantai': 0,
         'Tiistai': 1,
@@ -43,7 +46,17 @@ class TasksPage extends StatelessWidget {
       }[day] ??
       99;
 
-  // Aika → minuutit
+  int weekdayFromFinnish(String day) => const {
+        'Maanantai': DateTime.monday,
+        'Tiistai': DateTime.tuesday,
+        'Keskiviikko': DateTime.wednesday,
+        'Torstai': DateTime.thursday,
+        'Perjantai': DateTime.friday,
+        'Lauantai': DateTime.saturday,
+        'Sunnuntai': DateTime.sunday,
+      }[day] ??
+      DateTime.monday;
+
   int timeToMinutes(String time) {
     final parts = time.split(':');
     final h = int.tryParse(parts.isNotEmpty ? parts[0] : '') ?? 0;
@@ -51,15 +64,45 @@ class TasksPage extends StatelessWidget {
     return h * 60 + m;
   }
 
-  // 🎨 Pastelliväri per päivä (kevyt ja selkeä mobiilissa)
+  (int hour, int minute) parseTime(String time) {
+    final parts = time.split(':');
+    final h = int.tryParse(parts.isNotEmpty ? parts[0] : '') ?? 0;
+    final m = int.tryParse(parts.length > 1 ? parts[1] : '') ?? 0;
+    return (h, m);
+  }
+
+  int newNotificationId() =>
+      DateTime.now().millisecondsSinceEpoch.remainder(1000000000);
+
+  Future<void> scheduleForTask({
+    required int notificationId,
+    required String title,
+    required String day,
+    required String time,
+    required String type,
+  }) async {
+    final weekday = weekdayFromFinnish(day);
+    final (hour, minute) = parseTime(time);
+
+    await NotificationService.instance.scheduleWeekly(
+      id: notificationId,
+      title: 'Muistutus: $title',
+      body: '$day klo $time • $type (30 min ennen)',
+      weekday: weekday,
+      hour: hour,
+      minute: minute,
+      minutesBefore: 30, // ✅ 30 min aikaisemmin
+    );
+  }
+
   Color dayColor(String day) => const {
-        'Maanantai': Color(0xFFE3F2FD), // vaalea sininen
-        'Tiistai': Color(0xFFE8F5E9), // vaalea vihreä
-        'Keskiviikko': Color(0xFFFFF3E0), // vaalea oranssi
-        'Torstai': Color(0xFFF3E5F5), // vaalea violetti
-        'Perjantai': Color(0xFFFFEBEE), // vaalea punainen/pinkki
-        'Lauantai': Color(0xFFE0F7FA), // vaalea turkoosi
-        'Sunnuntai': Color(0xFFFFFDE7), // vaalea keltainen
+        'Maanantai': Color(0xFFE3F2FD),
+        'Tiistai': Color(0xFFE8F5E9),
+        'Keskiviikko': Color(0xFFFFF3E0),
+        'Torstai': Color(0xFFF3E5F5),
+        'Perjantai': Color(0xFFFFEBEE),
+        'Lauantai': Color(0xFFE0F7FA),
+        'Sunnuntai': Color(0xFFFFFDE7),
       }[day] ??
       const Color(0xFFF5F5F5);
 
@@ -74,7 +117,6 @@ class TasksPage extends StatelessWidget {
       }[day] ??
       const Color(0xFF9E9E9E);
 
-  // ✅ Poista KAIKKI tehdyt (kaikilta päiviltä) batchina
   Future<void> _deleteAllDoneTasks(BuildContext context) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -101,16 +143,18 @@ class TasksPage extends StatelessWidget {
     final snapshot = await tasks.where('done', isEqualTo: true).get();
     if (snapshot.docs.isEmpty) return;
 
-    // Firestore batch max 500 operaatiota / batch
+    for (final doc in snapshot.docs) {
+      final nid = doc.data()['notificationId'];
+      if (nid is int) await NotificationService.instance.cancel(nid);
+    }
+
     const batchLimit = 500;
     for (var i = 0; i < snapshot.docs.length; i += batchLimit) {
       final chunk = snapshot.docs.skip(i).take(batchLimit);
       final batch = FirebaseFirestore.instance.batch();
-
       for (final doc in chunk) {
         batch.delete(doc.reference);
       }
-
       await batch.commit();
     }
   }
@@ -206,7 +250,9 @@ class TasksPage extends StatelessWidget {
                     final title = titleController.text.trim();
                     if (title.isEmpty) return;
 
-                    Navigator.pop(context); // ✅ sulje heti
+                    Navigator.pop(context);
+
+                    final notificationId = newNotificationId();
 
                     await tasks.add({
                       'title': title,
@@ -216,8 +262,17 @@ class TasksPage extends StatelessWidget {
                       'done': false,
                       'dayIndex': dayIndex(selectedDay),
                       'timeMinutes': timeToMinutes(selectedTime),
+                      'notificationId': notificationId,
                       'createdAt': FieldValue.serverTimestamp(),
                     });
+
+                    await scheduleForTask(
+                      notificationId: notificationId,
+                      title: title,
+                      day: selectedDay,
+                      time: selectedTime,
+                      type: selectedType,
+                    );
                   },
                   child: const Text('Tallenna'),
                 ),
@@ -318,11 +373,17 @@ class TasksPage extends StatelessWidget {
               actions: [
                 TextButton(
                   onPressed: () async {
-                    Navigator.pop(context); // ✅ sulje heti
+                    Navigator.pop(context);
+
+                    final oldNid = data['notificationId'];
+                    if (oldNid is int) {
+                      await NotificationService.instance.cancel(oldNid);
+                    }
+
                     await tasks.doc(docId).delete();
                   },
-                  child:
-                      const Text('Poista', style: TextStyle(color: Colors.red)),
+                  child: const Text('Poista',
+                      style: TextStyle(color: Colors.red)),
                 ),
                 TextButton(
                   onPressed: () => Navigator.pop(context),
@@ -330,15 +391,38 @@ class TasksPage extends StatelessWidget {
                 ),
                 ElevatedButton(
                   onPressed: () async {
-                    Navigator.pop(context); // ✅ sulje heti
+                    Navigator.pop(context);
+
+                    final updatedTitle = titleController.text.trim();
+                    if (updatedTitle.isEmpty) return;
+
+                    final oldNid = data['notificationId'];
+                    if (oldNid is int) {
+                      await NotificationService.instance.cancel(oldNid);
+                    }
+
+                    final newNid = newNotificationId();
+
                     await tasks.doc(docId).update({
-                      'title': titleController.text.trim(),
+                      'title': updatedTitle,
                       'day': selectedDay,
                       'time': selectedTime,
                       'type': selectedType,
                       'dayIndex': dayIndex(selectedDay),
                       'timeMinutes': timeToMinutes(selectedTime),
+                      'notificationId': newNid,
                     });
+
+                    final done = (data['done'] ?? false) == true;
+                    if (!done) {
+                      await scheduleForTask(
+                        notificationId: newNid,
+                        title: updatedTitle,
+                        day: selectedDay,
+                        time: selectedTime,
+                        type: selectedType,
+                      );
+                    }
                   },
                   child: const Text('Tallenna'),
                 ),
@@ -398,9 +482,7 @@ class TasksPage extends StatelessWidget {
     return Card(
       child: Container(
         decoration: BoxDecoration(
-          border: Border(
-            left: BorderSide(color: accent, width: 5),
-          ),
+          border: Border(left: BorderSide(color: accent, width: 5)),
         ),
         child: ListTile(
           title: Text(
@@ -414,7 +496,31 @@ class TasksPage extends StatelessWidget {
           ),
           trailing: Checkbox(
             value: doneValue,
-            onChanged: (v) => tasks.doc(doc.id).update({'done': v}),
+            onChanged: (v) async {
+              final newDone = v == true;
+
+              final nid = data['notificationId'];
+              final title = (data['title'] ?? '').toString();
+              final time = (data['time'] ?? '14:00').toString();
+              final type = (data['type'] ?? 'Muut').toString();
+              final day = (data['day'] ?? 'Maanantai').toString();
+
+              if (nid is int) {
+                if (newDone) {
+                  await NotificationService.instance.cancel(nid);
+                } else {
+                  await scheduleForTask(
+                    notificationId: nid,
+                    title: title,
+                    day: day,
+                    time: time,
+                    type: type,
+                  );
+                }
+              }
+
+              await tasks.doc(doc.id).update({'done': newDone});
+            },
           ),
           onTap: () => _showEditTaskDialog(context, doc.id, data),
         ),
@@ -425,7 +531,16 @@ class TasksPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Tehtävät')),
+      appBar: AppBar(
+        title: const Text('Tehtävät'),
+        actions: [
+          IconButton(
+            tooltip: 'Testi-notifikaatio',
+            onPressed: () => NotificationService.instance.showTestNow(),
+            icon: const Icon(Icons.notifications_active),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => _showAddTaskDialog(context),
         child: const Icon(Icons.add),
@@ -441,7 +556,6 @@ class TasksPage extends StatelessWidget {
           }
 
           final allDocs = snapshot.data!.docs;
-
           final undoneDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
           final doneDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
 
@@ -457,7 +571,6 @@ class TasksPage extends StatelessWidget {
 
           final widgets = <Widget>[];
 
-          // ---- Tekemättömät ----
           if (undoneDocs.isEmpty) {
             widgets.add(const Padding(
               padding: EdgeInsets.only(top: 16),
@@ -473,18 +586,15 @@ class TasksPage extends StatelessWidget {
 
               if (showHeader) widgets.add(_dayHeader(day));
 
-              widgets.add(
-                _taskCard(
-                  context: context,
-                  doc: doc,
-                  data: data,
-                  doneValue: false,
-                ),
-              );
+              widgets.add(_taskCard(
+                context: context,
+                doc: doc,
+                data: data,
+                doneValue: false,
+              ));
             }
           }
 
-          // ---- Tehdyt ----
           if (doneDocs.isNotEmpty) {
             widgets.add(_doneHeaderRow(context));
 
@@ -509,14 +619,12 @@ class TasksPage extends StatelessWidget {
                 ));
               }
 
-              widgets.add(
-                _taskCard(
-                  context: context,
-                  doc: doc,
-                  data: data,
-                  doneValue: true,
-                ),
-              );
+              widgets.add(_taskCard(
+                context: context,
+                doc: doc,
+                data: data,
+                doneValue: true,
+              ));
             }
           }
 
