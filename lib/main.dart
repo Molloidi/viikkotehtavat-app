@@ -35,6 +35,7 @@ class TasksPage extends StatelessWidget {
   CollectionReference<Map<String, dynamic>> get tasks =>
       FirebaseFirestore.instance.collection('tasks');
 
+  // Päiväjärjestys
   int dayIndex(String day) => const {
         'Maanantai': 0,
         'Tiistai': 1,
@@ -57,6 +58,7 @@ class TasksPage extends StatelessWidget {
       }[day] ??
       DateTime.monday;
 
+  // Aika → minuutit
   int timeToMinutes(String time) {
     final parts = time.split(':');
     final h = int.tryParse(parts.isNotEmpty ? parts[0] : '') ?? 0;
@@ -91,10 +93,11 @@ class TasksPage extends StatelessWidget {
       weekday: weekday,
       hour: hour,
       minute: minute,
-      minutesBefore: 30, // ✅ 30 min aikaisemmin
+      minutesBefore: 30,
     );
   }
 
+  // 🎨 Pastelliväri per päivä
   Color dayColor(String day) => const {
         'Maanantai': Color(0xFFE3F2FD),
         'Tiistai': Color(0xFFE8F5E9),
@@ -117,6 +120,7 @@ class TasksPage extends StatelessWidget {
       }[day] ??
       const Color(0xFF9E9E9E);
 
+  // ✅ Poista KAIKKI tehdyt batchina + peruuta notifit
   Future<void> _deleteAllDoneTasks(BuildContext context) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -143,15 +147,20 @@ class TasksPage extends StatelessWidget {
     final snapshot = await tasks.where('done', isEqualTo: true).get();
     if (snapshot.docs.isEmpty) return;
 
+    // peruuta notifit
     for (final doc in snapshot.docs) {
       final nid = doc.data()['notificationId'];
-      if (nid is int) await NotificationService.instance.cancel(nid);
+      if (nid is int) {
+        await NotificationService.instance.cancel(nid);
+      }
     }
 
+    // Firestore batch max 500
     const batchLimit = 500;
     for (var i = 0; i < snapshot.docs.length; i += batchLimit) {
       final chunk = snapshot.docs.skip(i).take(batchLimit);
       final batch = FirebaseFirestore.instance.batch();
+
       for (final doc in chunk) {
         batch.delete(doc.reference);
       }
@@ -382,8 +391,8 @@ class TasksPage extends StatelessWidget {
 
                     await tasks.doc(docId).delete();
                   },
-                  child: const Text('Poista',
-                      style: TextStyle(color: Colors.red)),
+                  child:
+                      const Text('Poista', style: TextStyle(color: Colors.red)),
                 ),
                 TextButton(
                   onPressed: () => Navigator.pop(context),
@@ -473,9 +482,9 @@ class TasksPage extends StatelessWidget {
   Widget _taskCard({
     required BuildContext context,
     required QueryDocumentSnapshot<Map<String, dynamic>> doc,
-    required Map<String, dynamic> data,
     required bool doneValue,
   }) {
+    final data = doc.data();
     final day = (data['day'] ?? '').toString();
     final accent = dayAccent(day);
 
@@ -497,13 +506,21 @@ class TasksPage extends StatelessWidget {
           trailing: Checkbox(
             value: doneValue,
             onChanged: (v) async {
-              final newDone = v == true;
+              final newDone = v ?? false;
 
-              final nid = data['notificationId'];
-              final title = (data['title'] ?? '').toString();
-              final time = (data['time'] ?? '14:00').toString();
-              final type = (data['type'] ?? 'Muut').toString();
-              final day = (data['day'] ?? 'Maanantai').toString();
+              // 1) päivitä done heti (UI seuraa streamista)
+              await tasks.doc(doc.id).update({'done': newDone});
+
+              // 2) ANDROID-FIX: hae tuore data ennen notif-logiikkaa
+              final fresh = await tasks.doc(doc.id).get();
+              final freshData = fresh.data();
+              if (freshData == null) return;
+
+              final nid = freshData['notificationId'];
+              final title = (freshData['title'] ?? '').toString();
+              final time = (freshData['time'] ?? '14:00').toString();
+              final type = (freshData['type'] ?? 'Muut').toString();
+              final day = (freshData['day'] ?? 'Maanantai').toString();
 
               if (nid is int) {
                 if (newDone) {
@@ -518,8 +535,6 @@ class TasksPage extends StatelessWidget {
                   );
                 }
               }
-
-              await tasks.doc(doc.id).update({'done': newDone});
             },
           ),
           onTap: () => _showEditTaskDialog(context, doc.id, data),
@@ -556,6 +571,7 @@ class TasksPage extends StatelessWidget {
           }
 
           final allDocs = snapshot.data!.docs;
+
           final undoneDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
           final doneDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
 
@@ -571,6 +587,7 @@ class TasksPage extends StatelessWidget {
 
           final widgets = <Widget>[];
 
+          // ---- Tekemättömät ----
           if (undoneDocs.isEmpty) {
             widgets.add(const Padding(
               padding: EdgeInsets.only(top: 16),
@@ -586,15 +603,17 @@ class TasksPage extends StatelessWidget {
 
               if (showHeader) widgets.add(_dayHeader(day));
 
-              widgets.add(_taskCard(
-                context: context,
-                doc: doc,
-                data: data,
-                doneValue: false,
-              ));
+              widgets.add(
+                _taskCard(
+                  context: context,
+                  doc: doc,
+                  doneValue: false,
+                ),
+              );
             }
           }
 
+          // ---- Tehdyt ----
           if (doneDocs.isNotEmpty) {
             widgets.add(_doneHeaderRow(context));
 
@@ -619,12 +638,13 @@ class TasksPage extends StatelessWidget {
                 ));
               }
 
-              widgets.add(_taskCard(
-                context: context,
-                doc: doc,
-                data: data,
-                doneValue: true,
-              ));
+              widgets.add(
+                _taskCard(
+                  context: context,
+                  doc: doc,
+                  doneValue: true,
+                ),
+              );
             }
           }
 
